@@ -304,6 +304,17 @@ func (c *Consumer) setStatus(ctx context.Context, submissionID, status, errMsg s
 			"err", err,
 		)
 	}
+
+	// Notify the leaderboard SSE stream when a submission fails so connected
+	// browsers see the entry appear in the "Failing" tab immediately.
+	if status == "FAILED" {
+		if err := c.rdb.Publish(ctx, "channel:leaderboard", "status_change").Err(); err != nil {
+			slog.Error("consumer: redis Publish leaderboard failed",
+				"submissionId", submissionID,
+				"err", err,
+			)
+		}
+	}
 }
 
 // shortID returns the first 8 chars of a UUID (matches container naming convention).

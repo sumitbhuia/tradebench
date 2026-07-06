@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getSubmissionHistory, getSubmissionResults, uploadSubmission } from '../api/client';
+import { getSubmissionHistory, getSubmissionResults, getSubmissionStatus, uploadSubmission } from '../api/client';
 
 import { CopyButton } from '../components/CopyButton';
 import { ErrorBanner } from '../components/ErrorBanner';
@@ -14,26 +14,82 @@ import { showToast } from '../components/Toast';
 import { UploadForm } from '../components/UploadForm';
 import type { UploadFormData } from '../components/UploadForm';
 import { useSubmissionStatus } from '../hooks/useSubmissionStatus';
-import type { MetricSnapshot, Score } from '../types/api';
+import type { MetricSnapshot, Score, Submission } from '../types/api';
 
 
 export function SubmitPage() {
-  const [submissionId, setSubmissionId] = useState<string | null>(() => localStorage.getItem('bench_submission_id'));
-  const [teamToken, setTeamToken] = useState(() => localStorage.getItem('bench_team_token') || '');
+  const [submissionId, setSubmissionId] = useState<string | null>(null);
+  const [teamToken, setTeamToken] = useState('');
+  const [sessionReady, setSessionReady] = useState(false);
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-
-  const { submission, phase, error: pollError } = useSubmissionStatus(submissionId, teamToken);
-
   const [snapshot, setSnapshot] = useState<MetricSnapshot | null>(null);
   const [score, setScore] = useState<Score | null>(null);
   const [history, setHistory] = useState<MetricSnapshot[]>([]);
 
+  const lastSubmissionRef = useRef<Submission | null>(null);
+
+  const handleStaleSession = useCallback(() => {
+    const prevId = localStorage.getItem('bench_submission_id');
+    if (prevId) {
+      localStorage.removeItem(`bench_rca_${prevId}`);
+      localStorage.removeItem(`bench_logs_${prevId}`);
+    }
+    localStorage.removeItem('bench_rca_history');
+    localStorage.removeItem('bench_submission_id');
+    localStorage.removeItem('bench_team_token');
+    setSubmissionId(null);
+    setTeamToken('');
+    setSnapshot(null);
+    setScore(null);
+    setHistory([]);
+    lastSubmissionRef.current = null;
+  }, []);
+
+  // Restore a saved session only if the submission still exists in the backend.
+  // After a DB wipe the old localStorage id is silently discarded — no error banner.
+  useEffect(() => {
+    let cancelled = false;
+
+    const restore = async () => {
+      const storedId = localStorage.getItem('bench_submission_id');
+      const storedToken = localStorage.getItem('bench_team_token') ?? '';
+
+      if (!storedId || !storedToken) {
+        if (!cancelled) setSessionReady(true);
+        return;
+      }
+
+      try {
+        await getSubmissionStatus(storedId, storedToken);
+        if (!cancelled) {
+          setSubmissionId(storedId);
+          setTeamToken(storedToken);
+          setSessionReady(true);
+        }
+      } catch {
+        if (!cancelled) {
+          handleStaleSession();
+          setSessionReady(true);
+        }
+      }
+    };
+
+    void restore();
+    return () => { cancelled = true; };
+  }, [handleStaleSession]);
+
+  const { submission, phase, error: pollError } = useSubmissionStatus(
+    sessionReady ? submissionId : null,
+    teamToken,
+    { onNotFound: handleStaleSession },
+  );
+
   // Latch: once we have a submission object, keep it visible even during
   // brief phase transitions so the UI never goes blank.
-  const lastSubmissionRef = useRef<typeof submission>(null);
   if (submission !== null) lastSubmissionRef.current = submission;
-  const displaySubmission = submission ?? lastSubmissionRef.current;
+  // If there's no active submissionId (e.g. after reset), ignore the latch entirely.
+  const displaySubmission = submissionId ? (submission ?? lastSubmissionRef.current) : null;
 
   const handleUpload = useCallback(async (data: UploadFormData) => {
     setUploadLoading(true);
@@ -44,6 +100,7 @@ export function SubmitPage() {
       setTeamToken(data.token);
       localStorage.setItem('bench_submission_id', result.submissionId);
       localStorage.setItem('bench_team_token', data.token);
+      localStorage.removeItem('bench_rca_history');
       setSnapshot(null);
       setScore(null);
       showToast('success', `Submission created: ${result.submissionId.slice(0, 8)}…`);
@@ -57,15 +114,22 @@ export function SubmitPage() {
   }, []);
 
   const handleReset = useCallback(() => {
+    const prevId = localStorage.getItem('bench_submission_id');
+    if (prevId) {
+      localStorage.removeItem(`bench_rca_${prevId}`);
+      localStorage.removeItem(`bench_logs_${prevId}`);
+    }
+    localStorage.removeItem('bench_rca_history');
     setSubmissionId(null);
     setTeamToken('');
     localStorage.removeItem('bench_submission_id');
     localStorage.removeItem('bench_team_token');
-    localStorage.removeItem('bench_rca_history');
     setUploadError(null);
     setSnapshot(null);
     setScore(null);
     setHistory([]);
+    lastSubmissionRef.current = null;
+    window.location.replace(window.location.pathname);
   }, []);
 
   // Metrics polling: driven by submissionId + teamToken only.
@@ -104,18 +168,14 @@ export function SubmitPage() {
     return () => { cancelled = true; clearInterval(timer); };
   }, [submissionId, teamToken]); // phase intentionally excluded — read via ref
 
-  // Auto-reset only for the truly stale-ID case: no submission data at all
-  // and we've been idle/failed for a sustained period.
-  useEffect(() => {
-    if (phase !== 'failed' && phase !== 'timeout') return;
-    if (displaySubmission !== null) return; // still have data, don't wipe
-    if (!submissionId) return;
-    const t = setTimeout(() => handleReset(), 5000);
-    return () => clearTimeout(t);
-  }, [phase, displaySubmission, submissionId, handleReset]);
+  // Note: No auto-reset timer. The user explicitly clicks "Submit another"
+  // or "Retry" to start a fresh submission.
 
   const isTerminal = phase === 'success' || phase === 'failed' || phase === 'timeout';
   const hasSubmission = displaySubmission !== null;
+  const showPipelineError =
+    hasSubmission &&
+    ((phase === 'failed' && displaySubmission!.status === 'FAILED') || phase === 'timeout');
 
   return (
     <div className="submit-page">
@@ -186,9 +246,9 @@ export function SubmitPage() {
         <div className="submit-right">
           <SubmissionPipeline currentStatus={hasSubmission ? displaySubmission!.status : null} />
 
-          {(phase === 'failed' || phase === 'timeout') && (
+          {showPipelineError && (
             <ErrorBanner
-              title={phase === 'failed' ? 'Benchmark Failed' : 'Polling Timed Out'}
+              title={phase === 'timeout' ? 'Polling Timed Out' : 'Benchmark Failed'}
               message={displaySubmission?.errorMessage ?? pollError ?? 'An unexpected error occurred during the benchmark pipeline.'}
               detail={pollError ?? undefined}
               onRetry={handleReset}

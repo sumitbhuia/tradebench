@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getSubmissionStatus } from '../api/client';
+import { ApiError, getSubmissionStatus } from '../api/client';
 import type { Submission, SubmissionStatus } from '../types/api';
 
 /** Phases the polling lifecycle can be in. */
@@ -26,6 +26,8 @@ interface PollingOptions {
   intervalMs?: number;
   /** Maximum milliseconds before the hook declares a timeout. @default 300_000 (5 min) */
   timeoutMs?: number;
+  /** Called when the API returns 404 — submission no longer exists (stale local session). */
+  onNotFound?: () => void;
 }
 
 /** Terminal statuses that should stop the polling loop. */
@@ -51,6 +53,8 @@ export function useSubmissionStatus(
 ): SubmissionStatusState {
   const intervalMs = options?.intervalMs ?? 2_000;
   const timeoutMs = options?.timeoutMs ?? 300_000;
+  const onNotFoundRef = useRef(options?.onNotFound);
+  onNotFoundRef.current = options?.onNotFound;
 
   const [submission, setSubmission] = useState<Submission | null>(null);
   const [phase, setPhase] = useState<PollingPhase>('idle');
@@ -59,10 +63,15 @@ export function useSubmissionStatus(
   // Track the start time for timeout calculation.
   const startRef = useRef<number>(0);
 
+  // Track consecutive errors to avoid killing the UI on a single failed fetch.
+  const consecutiveErrorsRef = useRef<number>(0);
+  const MAX_CONSECUTIVE_ERRORS = 5;
+
   const poll = useCallback(
     async (id: string, tk: string): Promise<boolean> => {
       try {
         const next = await getSubmissionStatus(id, tk);
+        consecutiveErrorsRef.current = 0; // reset on success
         setSubmission(next);
         setError(null);
 
@@ -81,9 +90,33 @@ export function useSubmissionStatus(
         setPhase('polling');
         return true; // continue polling
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unable to load submission status');
-        setPhase('failed');
-        return false; // stop polling on error
+        // Stale session — submission was deleted or DB was reset; don't show failure UI.
+        const isStale =
+          (err instanceof ApiError && (err.status === 404 || err.code === 'NOT_FOUND')) ||
+          (err instanceof Error && err.message.toLowerCase().includes('not found'));
+
+        if (isStale) {
+          consecutiveErrorsRef.current = 0;
+          setSubmission(null);
+          setPhase('idle');
+          setError(null);
+          onNotFoundRef.current?.();
+          return false;
+        }
+
+        consecutiveErrorsRef.current += 1;
+        const msg = err instanceof Error ? err.message : 'Unable to load submission status';
+        setError(msg);
+
+        // Only give up after multiple consecutive errors, not on the first one.
+        // During build/sandbox phases the API may briefly 404 or 500.
+        if (consecutiveErrorsRef.current >= MAX_CONSECUTIVE_ERRORS) {
+          setPhase('failed');
+          return false; // stop polling
+        }
+
+        // Keep polling — transient error.
+        return true;
       }
     },
     [timeoutMs],

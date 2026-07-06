@@ -86,11 +86,13 @@ export function App() {
         </div>
       </header>
 
-      <main>
-        {view === 'submit'
-          ? <SubmitPage />
-          : <LeaderboardPage onNavigateToSubmit={() => setView('submit')} />
-        }
+      <main className="main-views">
+        <div className={`main-view${view === 'submit' ? ' main-view--active' : ''}`}>
+          <SubmitPage />
+        </div>
+        <div className={`main-view${view === 'leaderboard' ? ' main-view--active' : ''}`}>
+          <LeaderboardPage onNavigateToSubmit={() => setView('submit')} />
+        </div>
       </main>
 
       <ToastContainer />

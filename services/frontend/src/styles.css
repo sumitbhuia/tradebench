@@ -78,6 +78,10 @@
 /* ─── Reset ─────────────────────────────────────────────── */
 *,*::before,*::after{box-sizing:border-box}
 body{margin:0;min-height:100vh;background:var(--bg-base);-webkit-font-smoothing:antialiased}
+
+/* Invisible scrollbars — scrolling still works via wheel / trackpad / touch */
+*{scrollbar-width:none;-ms-overflow-style:none}
+*::-webkit-scrollbar{display:none}
 button,input{font:inherit}
 button{cursor:pointer}
 button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -93,6 +97,8 @@ input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 
 /* ─── Shell ─────────────────────────────────────────────── */
 .app-shell{max-width:1200px;margin:0 auto;padding:0 20px 40px}
+.main-view{display:none}
+.main-view--active{display:block}
 
 /* ─── Top Bar ───────────────────────────────────────────── */
 .topbar{display:flex;justify-content:space-between;align-items:center;padding:12px 0;margin-bottom:20px;border-bottom:1px solid var(--border)}
@@ -467,7 +473,7 @@ input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
    DIAGNOSIS PANEL
    ═══════════════════════════════════════════════════════════ */
 .diag-panel{padding:14px 16px}
-.diag-scroll{display:flex;flex-direction:column;gap:20px;max-height:400px;overflow-y:auto;padding-right:4px}
+.diag-scroll{display:flex;flex-direction:column;gap:20px;max-height:520px;overflow-y:auto;padding-right:4px}
 .diag-run{display:flex;flex-direction:column;gap:8px}
 .diag-run-header{display:flex;justify-content:space-between;align-items:center;padding-bottom:5px;border-bottom:1px solid var(--border)}
 .diag-run-id{font-size:0.75rem;font-weight:600;color:var(--text-2)}
@@ -481,6 +487,13 @@ input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .diag-chip{font-size:0.6rem;font-weight:800;letter-spacing:0.08em;padding:2px 6px;border-radius:var(--radius-pill);color:#fff;flex-shrink:0;align-self:center}
 .diag-card-title{font-size:0.8rem;font-weight:700;color:var(--text-1);flex-shrink:0}
 .diag-card-detail{font-size:0.76rem;color:var(--text-2);font-family:var(--font-mono);line-height:1.4}
+.diag-windows{margin-top:4px;display:flex;flex-direction:column;gap:6px}
+.diag-windows-title{font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-3)}
+.diag-windows-list{display:flex;flex-direction:column;gap:3px;max-height:280px;overflow-y:auto;padding-right:2px}
+.diag-window-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:5px 8px;border-radius:var(--radius-s);background:var(--bg-inset);font-family:var(--font-mono);font-size:0.7rem;color:var(--text-2);line-height:1.4}
+.diag-window-label{color:var(--accent);font-weight:700;flex-shrink:0;min-width:24px}
+.diag-window-time{color:var(--text-3);flex-shrink:0}
+.diag-window-stat{white-space:nowrap}
 
 /* ═══════════════════════════════════════════════════════════
    PIPELINE STAGE INFO

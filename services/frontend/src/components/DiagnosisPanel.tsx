@@ -15,6 +15,62 @@ interface DiagnosisCard {
   detail: string;
 }
 
+// interface WindowDetail {
+//   windowNum: number;
+//   timestamp: string;
+//   tps: number;
+//   p99LatencyMs: number;
+//   errorPct: number;
+//   successCount: number;
+//   timeoutCount: number;
+//   correctnessPct: number;
+// }
+
+// function snapshotToWindow(num: number, snap: MetricSnapshot): WindowDetail {
+//   const total = snap.successCount + snap.failureCount + snap.timeoutCount;
+//   const errPct = total > 0 ? ((snap.failureCount + snap.timeoutCount) / total) * 100 : 0;
+//   return {
+//     windowNum: num,
+//     timestamp: new Date(snap.windowEnd).toLocaleTimeString('en-US', {
+//       hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
+//     }),
+//     tps: snap.tps,
+//     p99LatencyMs: snap.p99LatencyMs,
+//     errorPct: errPct,
+//     successCount: snap.successCount,
+//     timeoutCount: snap.timeoutCount,
+//     correctnessPct: norm(snap.correctnessScore),
+//   };
+// }
+
+interface WindowDetail {
+  windowNum: number;
+  timestamp: string;
+  tps: number;
+  p99LatencyMs: number;
+  errorPct: number;
+  successCount: number;
+  timeoutCount: number;
+  correctnessPct: number;
+}
+
+function snapshotToWindow(num: number, snap: MetricSnapshot): WindowDetail {
+  const total = snap.successCount + snap.failureCount + snap.timeoutCount;
+  const errPct = total > 0 ? ((snap.failureCount + snap.timeoutCount) / total) * 100 : 0;
+  return {
+    windowNum: num,
+    timestamp: new Date(snap.windowEnd).toLocaleTimeString('en-US', {
+      hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }),
+    tps: snap.tps,
+    p99LatencyMs: snap.p99LatencyMs,
+    errorPct: errPct,
+    successCount: snap.successCount,
+    timeoutCount: snap.timeoutCount,
+    correctnessPct: norm(snap.correctnessScore),
+  };
+}
+
 // ── Analysis helpers ──────────────────────────────────────────────────────────
 
 function errRate(s: MetricSnapshot): number {
@@ -144,79 +200,119 @@ interface CachedDiagnosis {
   timestamp: string;
   snapshotCount: number;
   cards: DiagnosisCard[];
+  windows: WindowDetail[];
+}
+
+function rcaStorageKey(submissionId: string): string {
+  return `bench_rca_${submissionId}`;
+}
+
+function loadCachedDiagnosis(submissionId: string): CachedDiagnosis | null {
+  try {
+    const stored = localStorage.getItem(rcaStorageKey(submissionId));
+    if (!stored) return null;
+    const parsed: CachedDiagnosis = JSON.parse(stored);
+    return { ...parsed, windows: parsed.windows ?? [] };
+  } catch {
+    return null;
+  }
 }
 
 export function DiagnosisPanel({ snapshots, submissionId }: DiagnosisPanelProps) {
-  const [history, setHistory] = useState<CachedDiagnosis[]>(() => {
-    try {
-      const stored = localStorage.getItem('bench_rca_history');
-      return stored ? JSON.parse(stored) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  // Track last snapshot count so we only re-run when we actually have new data
+  const [diagnosis, setDiagnosis] = useState<CachedDiagnosis | null>(null);
   const lastCountRef = useRef(0);
+  const activeIdRef = useRef<string | null>(null);
+
+  // Load only the current submission's RCA data; discard any previous run.
+  useEffect(() => {
+    if (!submissionId) {
+      activeIdRef.current = null;
+      lastCountRef.current = 0;
+      setDiagnosis(null);
+      return;
+    }
+
+    if (activeIdRef.current !== submissionId) {
+      activeIdRef.current = submissionId;
+      lastCountRef.current = 0;
+      setDiagnosis(loadCachedDiagnosis(submissionId));
+    }
+  }, [submissionId]);
 
   useEffect(() => {
-    if (!submissionId || snapshots.length < 3) return;
-    if (snapshots.length === lastCountRef.current) return;
+    if (!submissionId || snapshots.length === 0) return;
+
+    const windows = snapshots.map((s, i) => snapshotToWindow(i + 1, s));
+    const countChanged = snapshots.length !== lastCountRef.current;
+    const newCards = snapshots.length >= 3 ? diagnose(snapshots) : [];
+
+    if (!countChanged && windows.length === 0) return;
     lastCountRef.current = snapshots.length;
 
-    const newCards = diagnose(snapshots);
-    if (newCards.length === 0) return;
+    setDiagnosis(prev => {
+      const ts = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
 
-    setHistory(prev => {
-      const idx = prev.findIndex(h => h.id === submissionId);
-
-      if (idx !== -1) {
-        // Merge: keep existing cards and add any new card ids not yet seen
-        const existingIds = new Set(prev[idx].cards.map(c => c.id));
+      if (prev && prev.id === submissionId) {
+        const existingIds = new Set(prev.cards.map(c => c.id));
         const merged = [
-          ...prev[idx].cards,
+          ...prev.cards,
           ...newCards.filter(c => !existingIds.has(c.id)),
         ];
-        // Remove 'ok' if we now have real issues
         const hasIssues = merged.some(c => c.severity !== 'ok');
         const final = hasIssues ? merged.filter(c => c.id !== 'ok') : merged;
-        const updated = prev.map((h, i) => i === idx
-          ? { ...h, snapshotCount: snapshots.length, cards: final,
-              timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }) }
-          : h
-        );
-        localStorage.setItem('bench_rca_history', JSON.stringify(updated));
+        const updated: CachedDiagnosis = {
+          ...prev,
+          snapshotCount: snapshots.length,
+          cards: final,
+          windows,
+          timestamp: ts,
+        };
+        localStorage.setItem(rcaStorageKey(submissionId), JSON.stringify(updated));
         return updated;
       }
 
-      // New submission entry
       const entry: CachedDiagnosis = {
         id: submissionId,
-        timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
+        timestamp: ts,
         snapshotCount: snapshots.length,
         cards: newCards,
+        windows,
       };
-      const updated = [entry, ...prev];
-      localStorage.setItem('bench_rca_history', JSON.stringify(updated));
-      return updated;
+      localStorage.setItem(rcaStorageKey(submissionId), JSON.stringify(entry));
+      return entry;
     });
   }, [snapshots, submissionId]);
 
   if (!submissionId) return null;
-  if (history.length === 0) return null;
+
+  const liveWindows = snapshots.map((s, i) => snapshotToWindow(i + 1, s));
+  const displayRun = diagnosis && diagnosis.id === submissionId
+    ? { ...diagnosis, windows: liveWindows.length > 0 ? liveWindows : diagnosis.windows }
+    : liveWindows.length > 0
+      ? {
+          id: submissionId,
+          timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
+          snapshotCount: liveWindows.length,
+          cards: liveWindows.length >= 3 ? diagnose(snapshots) : [],
+          windows: liveWindows,
+        }
+      : null;
+
+  if (!displayRun || (displayRun.cards.length === 0 && displayRun.windows.length === 0)) return null;
 
   return (
     <section className="diag-panel" id="diagnosis-panel">
       <h3 className="section-label">Root Cause Analysis</h3>
       <div className="diag-scroll">
-        {history.map((h, hi) => (
-          <div key={h.id} className="diag-run">
-            <div className="diag-run-header">
-              <span className="mono diag-run-id">#{history.length - hi} · {h.id.slice(0, 8)}</span>
-              <span className="diag-run-meta">{h.snapshotCount} windows · {h.timestamp}</span>
-            </div>
+        <div className="diag-run">
+          <div className="diag-run-header">
+            <span className="mono diag-run-id">{displayRun.id.slice(0, 8)}</span>
+            <span className="diag-run-meta">{displayRun.snapshotCount} windows · {displayRun.timestamp}</span>
+          </div>
+
+          {displayRun.cards.length > 0 && (
             <div className="diag-cards">
-              {h.cards.map(c => (
+              {displayRun.cards.map(c => (
                 <div key={c.id} className={`diag-card diag-card--${c.severity}`}>
                   <SeverityChip s={c.severity} />
                   <span className="diag-card-title">{c.title}</span>
@@ -224,8 +320,30 @@ export function DiagnosisPanel({ snapshots, submissionId }: DiagnosisPanelProps)
                 </div>
               ))}
             </div>
-          </div>
-        ))}
+          )}
+
+          {displayRun.windows.length > 0 && (
+            <div className="diag-windows">
+              <div className="diag-windows-title">
+                Window Breakdown ({displayRun.windows.length})
+              </div>
+              <div className="diag-windows-list">
+                {displayRun.windows.map(w => (
+                  <div key={w.windowNum} className="diag-window-row">
+                    <span className="diag-window-label">W{w.windowNum}</span>
+                    <span className="diag-window-time">{w.timestamp}</span>
+                    <span className="diag-window-stat">TPS={w.tps.toFixed(0)}</span>
+                    <span className="diag-window-stat">P99={w.p99LatencyMs.toFixed(0)}ms</span>
+                    <span className="diag-window-stat">Err={w.errorPct.toFixed(1)}%</span>
+                    <span className="diag-window-stat">OK={w.successCount}</span>
+                    <span className="diag-window-stat">Timeout={w.timeoutCount}</span>
+                    <span className="diag-window-stat">Cor={w.correctnessPct.toFixed(0)}%</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </section>
   );

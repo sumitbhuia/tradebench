@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SubmissionStatus } from '../types/api';
-
 interface StageInfo {
   title: string;
   description: string;
@@ -87,6 +86,17 @@ export function BenchmarkStageInfo({ currentStatus }: BenchmarkStageInfoProps) {
   const key = currentStatus ?? 'idle';
   const messages = STAGE_INFO[key] ?? STAGE_INFO['idle'];
   const [index, setIndex] = useState(0);
+  const indexStageRef = useRef(key);
+
+  // Reset rotation immediately when the pipeline stage changes so we never
+  // read messages[index] with a stale index from the previous stage.
+  if (indexStageRef.current !== key) {
+    indexStageRef.current = key;
+    setIndex(0);
+  }
+
+  const safeIndex = messages.length > 0 ? index % messages.length : 0;
+  const message = messages[safeIndex] ?? messages[0] ?? STAGE_INFO.idle[0];
 
   useEffect(() => {
     setIndex(0);
@@ -97,8 +107,7 @@ export function BenchmarkStageInfo({ currentStatus }: BenchmarkStageInfoProps) {
     return () => clearInterval(t);
   }, [key, messages.length]);
 
-  const { title, description } = messages[index];
-
+  const { title, description } = message;
   return (
     <div className="stage-info" id="stage-info">
       <span className="stage-info-title">{title}</span>
